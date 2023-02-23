@@ -214,68 +214,68 @@ public class ConnectionConfiguration {
     return pipelineName;
   }
 
-  public RestHighLevelClient createClient() {
-    final HttpHost[] httpHosts = new HttpHost[hosts.size()];
-    int i = 0;
-    for (final String host : hosts) {
-      httpHosts[i] = HttpHost.create(host);
-      i++;
-    }
-    final RestClientBuilder restClientBuilder = RestClient.builder(httpHosts);
-    /*
-     * Given that this is a patch release, we will support only the IAM based access policy AES domains.
-     * We will not support FGAC and Custom endpoint domains. This will be followed in the next version.
-     */
-    if(awsSigv4) {
-      attachSigV4(restClientBuilder);
-    } else {
-      attachUserCredentials(restClientBuilder);
-    }
-    restClientBuilder.setRequestConfigCallback(
-            requestConfigBuilder -> {
-              if (connectTimeout != null) {
-                requestConfigBuilder.setConnectTimeout(connectTimeout);
-              }
-              if (socketTimeout != null) {
-                requestConfigBuilder.setSocketTimeout(socketTimeout);
-              }
-              return requestConfigBuilder;
-            });
-    return new RestHighLevelClient(restClientBuilder);
-  }
+//  public RestHighLevelClient createClient() {
+//    final HttpHost[] httpHosts = new HttpHost[hosts.size()];
+//    int i = 0;
+//    for (final String host : hosts) {
+//      httpHosts[i] = HttpHost.create(host);
+//      i++;
+//    }
+//    final RestClientBuilder restClientBuilder = RestClient.builder(httpHosts);
+//    /*
+//     * Given that this is a patch release, we will support only the IAM based access policy AES domains.
+//     * We will not support FGAC and Custom endpoint domains. This will be followed in the next version.
+//     */
+//    if(awsSigv4) {
+//      attachSigV4(restClientBuilder);
+//    } else {
+//      attachUserCredentials(restClientBuilder);
+//    }
+//    restClientBuilder.setRequestConfigCallback(
+//            requestConfigBuilder -> {
+//              if (connectTimeout != null) {
+//                requestConfigBuilder.setConnectTimeout(connectTimeout);
+//              }
+//              if (socketTimeout != null) {
+//                requestConfigBuilder.setSocketTimeout(socketTimeout);
+//              }
+//              return requestConfigBuilder;
+//            });
+//    return new RestHighLevelClient(restClientBuilder);
+//  }
 
-  private void attachSigV4(final RestClientBuilder restClientBuilder) {
-    //if aws signing is enabled we will add AWSRequestSigningApacheInterceptor interceptor,
-    //if not follow regular credentials process
-    LOG.info("{} is set, will sign requests using AWSRequestSigningApacheInterceptor", AWS_SIGV4);
-    final Aws4Signer aws4Signer = Aws4Signer.create();
-    final AwsCredentialsProvider credentialsProvider;
-    if (awsStsRoleArn != null && !awsStsRoleArn.isEmpty()) {
-      AssumeRoleRequest.Builder assumeRoleRequestBuilder = AssumeRoleRequest.builder()
-              .roleSessionName("OpenSearch-Sink-" + UUID.randomUUID())
-              .roleArn(awsStsRoleArn);
-
-      if(awsStsHeaderOverrides != null && !awsStsHeaderOverrides.isEmpty()) {
-        assumeRoleRequestBuilder = assumeRoleRequestBuilder
-                .overrideConfiguration(configuration -> awsStsHeaderOverrides.forEach(configuration::putHeader));
-      }
-
-      credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
-              .stsClient(getStsClient())
-              .refreshRequest(assumeRoleRequestBuilder.build())
-              .build();
-    } else {
-      credentialsProvider = DefaultCredentialsProvider.create();
-    }
-    final HttpRequestInterceptor httpRequestInterceptor = new AwsRequestSigningApacheInterceptor(SERVICE_NAME, aws4Signer,
-            credentialsProvider, awsRegion);
-    restClientBuilder.setHttpClientConfigCallback(httpClientBuilder -> {
-      httpClientBuilder.addInterceptorLast(httpRequestInterceptor);
-      attachSSLContext(httpClientBuilder);
-      setHttpProxyIfApplicable(httpClientBuilder);
-      return httpClientBuilder;
-    });
-  }
+//  private void attachSigV4(final RestClientBuilder restClientBuilder) {
+//    //if aws signing is enabled we will add AWSRequestSigningApacheInterceptor interceptor,
+//    //if not follow regular credentials process
+//    LOG.info("{} is set, will sign requests using AWSRequestSigningApacheInterceptor", AWS_SIGV4);
+//    final Aws4Signer aws4Signer = Aws4Signer.create();
+//    final AwsCredentialsProvider credentialsProvider;
+//    if (awsStsRoleArn != null && !awsStsRoleArn.isEmpty()) {
+//      AssumeRoleRequest.Builder assumeRoleRequestBuilder = AssumeRoleRequest.builder()
+//              .roleSessionName("OpenSearch-Sink-" + UUID.randomUUID())
+//              .roleArn(awsStsRoleArn);
+//
+//      if(awsStsHeaderOverrides != null && !awsStsHeaderOverrides.isEmpty()) {
+//        assumeRoleRequestBuilder = assumeRoleRequestBuilder
+//                .overrideConfiguration(configuration -> awsStsHeaderOverrides.forEach(configuration::putHeader));
+//      }
+//
+//      credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
+//              .stsClient(getStsClient())
+//              .refreshRequest(assumeRoleRequestBuilder.build())
+//              .build();
+//    } else {
+//      credentialsProvider = DefaultCredentialsProvider.create();
+//    }
+//    final HttpRequestInterceptor httpRequestInterceptor = new AwsRequestSigningApacheInterceptor(SERVICE_NAME, aws4Signer,
+//            credentialsProvider, awsRegion);
+//    restClientBuilder.setHttpClientConfigCallback(httpClientBuilder -> {
+//      httpClientBuilder.addInterceptorLast(httpRequestInterceptor);
+//      attachSSLContext(httpClientBuilder);
+//      setHttpProxyIfApplicable(httpClientBuilder);
+//      return httpClientBuilder;
+//    });
+//  }
 
   private StsClient getStsClient() {
     final BackoffStrategy backoffStrategy = EqualJitterBackoffStrategy.builder()

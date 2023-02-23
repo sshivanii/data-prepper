@@ -5,6 +5,8 @@
 
 package org.opensearch.dataprepper.plugins.sink.opensearch;
 
+import org.opensearch.client.transport.aws.AwsSdk2Transport;
+import org.opensearch.client.transport.aws.AwsSdk2TransportOptions;
 import org.opensearch.dataprepper.model.plugin.InvalidPluginConfigurationException;
 
 import org.opensearch.dataprepper.model.annotations.DataPrepperPlugin;
@@ -38,6 +40,9 @@ import org.opensearch.dataprepper.plugins.sink.opensearch.index.IndexManagerFact
 import org.opensearch.dataprepper.plugins.sink.opensearch.index.IndexType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.regions.Region;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -126,7 +131,7 @@ public class OpenSearchSink extends AbstractSink<Record<Event>> {
 
   private void doInitializeInternal() throws IOException {
     LOG.info("Initializing OpenSearch sink");
-    restHighLevelClient = openSearchSinkConfig.getConnectionConfiguration().createClient();
+//    restHighLevelClient = openSearchSinkConfig.getConnectionConfiguration().createClient();
     configuredIndexAlias = openSearchSinkConfig.getIndexConfiguration().getIndexAlias();
     indexManager = indexManagerFactory.getIndexManager(indexType, restHighLevelClient, openSearchSinkConfig, configuredIndexAlias);
     final String dlqFile = openSearchSinkConfig.getRetryConfiguration().getDlqFile();
@@ -135,8 +140,18 @@ public class OpenSearchSink extends AbstractSink<Record<Event>> {
     }
     indexManager.setupIndex();
 
-    OpenSearchTransport transport = new RestClientTransport(restHighLevelClient.getLowLevelClient(), new PreSerializedJsonpMapper());
-    openSearchClient = new OpenSearchClient(transport);
+//    OpenSearchTransport transport = new RestClientTransport(restHighLevelClient.getLowLevelClient(), new PreSerializedJsonpMapper());
+//    openSearchClient = new OpenSearchClient(transport);
+    SdkHttpClient httpClient = ApacheHttpClient.builder().build();
+    openSearchClient = new OpenSearchClient(
+            new AwsSdk2Transport(
+                    httpClient,
+                    String.valueOf(openSearchSinkConfig.getConnectionConfiguration().getHosts()),
+                    "es",
+                    Region.US_WEST_2,
+                    AwsSdk2TransportOptions.builder().build()
+            )
+    );
     bulkRequestSupplier = () -> new JavaClientAccumulatingBulkRequest(new BulkRequest.Builder());
     bulkRetryStrategy = new BulkRetryStrategy(
             bulkRequest -> openSearchClient.bulk(bulkRequest.getRequest()),
