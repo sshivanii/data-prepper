@@ -5,6 +5,19 @@
 
 package org.opensearch.dataprepper.plugins.processor.oteltracegroup;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.base.Strings;
+import io.micrometer.core.instrument.Counter;
+import org.opensearch.client.json.JsonData;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.FieldValue;
+import org.opensearch.client.opensearch._types.query_dsl.BoolQuery;
+import org.opensearch.client.opensearch._types.query_dsl.Query;
+import org.opensearch.client.opensearch._types.query_dsl.TermsQuery;
+import org.opensearch.client.opensearch._types.query_dsl.TermsQueryField;
+import org.opensearch.client.opensearch.core.SearchRequest;
+import org.opensearch.client.opensearch.core.SearchResponse;
+import org.opensearch.client.opensearch.core.search.Hit;
 import org.opensearch.dataprepper.model.annotations.DataPrepperPlugin;
 import org.opensearch.dataprepper.model.configuration.PluginSetting;
 import org.opensearch.dataprepper.model.processor.AbstractProcessor;
@@ -13,24 +26,13 @@ import org.opensearch.dataprepper.model.record.Record;
 import org.opensearch.dataprepper.model.trace.DefaultTraceGroupFields;
 import org.opensearch.dataprepper.model.trace.Span;
 import org.opensearch.dataprepper.model.trace.TraceGroupFields;
-import com.google.common.base.Strings;
-import io.micrometer.core.instrument.Counter;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchResponse;
-import org.opensearch.client.RequestOptions;
-import org.opensearch.client.RestHighLevelClient;
-import org.opensearch.common.document.DocumentField;
 import org.opensearch.dataprepper.plugins.processor.oteltracegroup.model.TraceGroup;
-import org.opensearch.index.query.QueryBuilders;
-import org.opensearch.search.SearchHit;
-import org.opensearch.search.builder.SearchSourceBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.util.AbstractMap;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -40,6 +42,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.opensearch.dataprepper.logging.DataPrepperMarkers.EVENT;
@@ -54,7 +57,8 @@ public class OTelTraceGroupProcessor extends AbstractProcessor<Record<Span>, Rec
     private static final Logger LOG = LoggerFactory.getLogger(OTelTraceGroupProcessor.class);
 
     private final OTelTraceGroupProcessorConfig otelTraceGroupProcessorConfig;
-    private final RestHighLevelClient restHighLevelClient;
+
+    private final OpenSearchClient openSearchClient;
 
     private final Counter recordsInMissingTraceGroupCounter;
     private final Counter recordsOutFixedTraceGroupCounter;
@@ -63,8 +67,8 @@ public class OTelTraceGroupProcessor extends AbstractProcessor<Record<Span>, Rec
     public OTelTraceGroupProcessor(final PluginSetting pluginSetting) {
         super(pluginSetting);
         otelTraceGroupProcessorConfig = OTelTraceGroupProcessorConfig.buildConfig(pluginSetting);
-        restHighLevelClient = otelTraceGroupProcessorConfig.getEsConnectionConfig().createClient();
 
+        openSearchClient = otelTraceGroupProcessorConfig.getEsConnectionConfig().createOpenSearchClient();
         recordsInMissingTraceGroupCounter = pluginMetrics.counter(RECORDS_IN_MISSING_TRACE_GROUP);
         recordsOutFixedTraceGroupCounter = pluginMetrics.counter(RECORDS_OUT_FIXED_TRACE_GROUP);
         recordsOutMissingTraceGroupCounter = pluginMetrics.counter(RECORDS_OUT_MISSING_TRACE_GROUP);
@@ -88,11 +92,11 @@ public class OTelTraceGroupProcessor extends AbstractProcessor<Record<Span>, Rec
             }
         }
 
-        final Map<String, TraceGroup> traceIdToTraceGroup = searchTraceGroupByTraceIds(traceIdsToLookUp);
+        final Map<String, TraceGroup> traceGroupMap = searchTraceGroupByTraceId(traceIdsToLookUp);
         for (final Record<Span> record: recordsMissingTraceGroupInfo) {
             final Span span = record.getData();
             final String traceId = span.getTraceId();
-            final TraceGroup traceGroup = traceIdToTraceGroup.get(traceId);
+            final TraceGroup traceGroup = traceGroupMap.get(traceId);
             if (traceGroup != null) {
                 try {
                     fillInTraceGroupInfo(span, traceGroup);
@@ -119,57 +123,58 @@ public class OTelTraceGroupProcessor extends AbstractProcessor<Record<Span>, Rec
         span.setTraceGroupFields(traceGroup.getTraceGroupFields());
     }
 
-    private Map<String, TraceGroup> searchTraceGroupByTraceIds(final Collection<String> traceIds) {
+
+    private Map<String, TraceGroup> searchTraceGroupByTraceId(final Collection<String> traceIds) {
         final Map<String, TraceGroup> traceIdToTraceGroup = new HashMap<>();
-        final SearchRequest searchRequest = createSearchRequest(traceIds);
+
+        SearchRequest searchRequest = new SearchRequest.Builder()
+                .index("otel-v1-apm-span")
+                .query(q -> q.bool(new BoolQuery.Builder()
+                                .must(new Query.Builder()
+                                        .terms(new TermsQuery.Builder()
+                                                .field(OTelTraceGroupProcessorConfig.TRACE_ID_FIELD)
+                                                .terms(new TermsQueryField.Builder().value(traceIds.stream().map(traceId -> FieldValue.of(traceId)).collect(Collectors.toList())).build())
+                                                .build()).build(),
+                                        new Query.Builder()
+                                                .terms(new TermsQuery.Builder()
+                                                        .field(OTelTraceGroupProcessorConfig.PARENT_SPAN_ID_FIELD)
+                                                        .terms(new TermsQueryField.Builder().value(List.of(FieldValue.of(""))).build())
+                                                        .build()).build())
+                        .build()
+                ))
+                // TODO: construct docValueFields() list
+                .build();
+
 
         try {
-            final SearchResponse searchResponse = restHighLevelClient.search(searchRequest, RequestOptions.DEFAULT);
-            final SearchHit[] searchHits = searchResponse.getHits().getHits();
-            Arrays.asList(searchHits).forEach(searchHit -> {
-                final Optional<Map.Entry<String, TraceGroup>> optionalStringTraceGroupEntry = fromSearchHitToMapEntry(searchHit);
+            SearchResponse<ObjectNode> searchResponse = openSearchClient.search(searchRequest, ObjectNode.class);
+            final List<Hit<ObjectNode>> searchHits = searchResponse.hits().hits();
+            searchHits.forEach(searchHit -> {
+                final Optional<Map.Entry<String, TraceGroup>> optionalStringTraceGroupEntry = fromSearchHitObjectToMapEntry(searchHit);
                 optionalStringTraceGroupEntry.ifPresent(entry -> traceIdToTraceGroup.put(entry.getKey(), entry.getValue()));
             });
-        } catch (Exception e) {
-            // TODO: retry for status code 429 of OpenSearchException?
-            LOG.error("Search request for traceGroup failed for traceIds: {} due to {}", traceIds, e.getMessage());
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
+
 
         return traceIdToTraceGroup;
     }
 
-    private SearchRequest createSearchRequest(final Collection<String> traceIds) {
-        final SearchRequest searchRequest = new SearchRequest(OTelTraceGroupProcessorConfig.RAW_INDEX_ALIAS);
-        final SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
-        searchSourceBuilder.query(
-                QueryBuilders.boolQuery()
-                        .must(QueryBuilders.termsQuery(OTelTraceGroupProcessorConfig.TRACE_ID_FIELD, traceIds))
-                        .must(QueryBuilders.termQuery(OTelTraceGroupProcessorConfig.PARENT_SPAN_ID_FIELD, ""))
-        );
-        searchSourceBuilder.docValueField(OTelTraceGroupProcessorConfig.TRACE_ID_FIELD);
-        searchSourceBuilder.docValueField(TraceGroup.TRACE_GROUP_NAME_FIELD);
-        searchSourceBuilder.docValueField(TraceGroup.TRACE_GROUP_END_TIME_FIELD, OTelTraceGroupProcessorConfig.STRICT_DATE_TIME);
-        searchSourceBuilder.docValueField(TraceGroup.TRACE_GROUP_DURATION_IN_NANOS_FIELD);
-        searchSourceBuilder.docValueField(TraceGroup.TRACE_GROUP_STATUS_CODE_FIELD);
-        searchSourceBuilder.fetchSource(false);
-        searchRequest.source(searchSourceBuilder);
 
-        return searchRequest;
-    }
-
-    private Optional<Map.Entry<String, TraceGroup>> fromSearchHitToMapEntry(final SearchHit searchHit) {
-        final DocumentField traceIdDocField = searchHit.field(OTelTraceGroupProcessorConfig.TRACE_ID_FIELD);
-        final DocumentField traceGroupNameDocField = searchHit.field(TraceGroup.TRACE_GROUP_NAME_FIELD);
-        final DocumentField traceGroupEndTimeDocField = searchHit.field(TraceGroup.TRACE_GROUP_END_TIME_FIELD);
-        final DocumentField traceGroupDurationInNanosDocField = searchHit.field(TraceGroup.TRACE_GROUP_DURATION_IN_NANOS_FIELD);
-        final DocumentField traceGroupStatusCodeDocField = searchHit.field(TraceGroup.TRACE_GROUP_STATUS_CODE_FIELD);
+    private Optional<Map.Entry<String, TraceGroup>> fromSearchHitObjectToMapEntry(final Hit<ObjectNode> searchHit) {
+        final JsonData traceIdDocField = searchHit.fields().get(OTelTraceGroupProcessorConfig.TRACE_ID_FIELD);
+        final JsonData traceGroupNameDocField = searchHit.fields().get(TraceGroup.TRACE_GROUP_NAME_FIELD);
+        final JsonData traceGroupEndTimeDocField = searchHit.fields().get(TraceGroup.TRACE_GROUP_END_TIME_FIELD);
+        final JsonData traceGroupDurationInNanosDocField = searchHit.fields().get(TraceGroup.TRACE_GROUP_DURATION_IN_NANOS_FIELD);
+        final JsonData traceGroupStatusCodeDocField = searchHit.fields().get(TraceGroup.TRACE_GROUP_STATUS_CODE_FIELD);
         if (Stream.of(traceIdDocField, traceGroupNameDocField, traceGroupEndTimeDocField, traceGroupDurationInNanosDocField,
                 traceGroupStatusCodeDocField).allMatch(Objects::nonNull)) {
-            final String traceId = traceIdDocField.getValue();
-            final String traceGroupName = traceGroupNameDocField.getValue();
-            final String traceGroupEndTime = normalizeDateTime(traceGroupEndTimeDocField.getValue());
-            final Number traceGroupDurationInNanos = traceGroupDurationInNanosDocField.getValue();
-            final Number traceGroupStatusCode = traceGroupStatusCodeDocField.getValue();
+            final String traceId = traceIdDocField.toString();
+            final String traceGroupName = traceGroupNameDocField.toString();
+            final String traceGroupEndTime = normalizeDateTime(traceGroupEndTimeDocField.toString());
+            final Number traceGroupDurationInNanos = traceGroupDurationInNanosDocField.to(Number.class);
+            final Number traceGroupStatusCode = traceGroupStatusCodeDocField.to(Number.class);
             final TraceGroupFields traceGroupFields = DefaultTraceGroupFields.builder()
                     .withEndTime(traceGroupEndTime)
                     .withDurationInNanos(traceGroupDurationInNanos.longValue())
@@ -203,10 +208,6 @@ public class OTelTraceGroupProcessor extends AbstractProcessor<Record<Span>, Rec
 
     @Override
     public void shutdown() {
-        try {
-            restHighLevelClient.close();
-        } catch (IOException e) {
-            throw new RuntimeException(e.getMessage(), e);
-        }
+        openSearchClient.shutdown();
     }
 }

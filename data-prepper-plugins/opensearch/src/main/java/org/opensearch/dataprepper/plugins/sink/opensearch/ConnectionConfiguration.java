@@ -5,7 +5,6 @@
 
 package org.opensearch.dataprepper.plugins.sink.opensearch;
 
-import org.opensearch.dataprepper.model.configuration.PluginSetting;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpRequestInterceptor;
 import org.apache.http.auth.AuthScope;
@@ -21,6 +20,10 @@ import org.apache.http.ssl.SSLContexts;
 import org.opensearch.client.RestClient;
 import org.opensearch.client.RestClientBuilder;
 import org.opensearch.client.RestHighLevelClient;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.transport.aws.AwsSdk2Transport;
+import org.opensearch.client.transport.aws.AwsSdk2TransportOptions;
+import org.opensearch.dataprepper.model.configuration.PluginSetting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.arns.Arn;
@@ -32,6 +35,9 @@ import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.core.retry.backoff.BackoffStrategy;
 import software.amazon.awssdk.core.retry.backoff.EqualJitterBackoffStrategy;
 import software.amazon.awssdk.core.retry.conditions.RetryCondition;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
@@ -46,6 +52,7 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.time.Duration;
 import java.time.temporal.ValueRange;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -214,6 +221,26 @@ public class ConnectionConfiguration {
     return pipelineName;
   }
 
+
+  // TODO: Clean up and combine createClient() and createOpenSearchClient() methods
+  public OpenSearchClient createOpenSearchClient() {
+    final HttpHost[] httpHosts = new HttpHost[hosts.size()];
+    int i = 0;
+    for (final String host : hosts) {
+      httpHosts[i] = HttpHost.create(host);
+      i++;
+    }
+    final SdkHttpClient httpClient = ApacheHttpClient.builder().build();
+    return new OpenSearchClient(new AwsSdk2Transport(
+            httpClient,
+            Arrays.toString(httpHosts),
+            "es",
+            Region.US_WEST_2,
+            AwsSdk2TransportOptions.builder().build()
+    ));
+  }
+
+
   public RestHighLevelClient createClient() {
     final HttpHost[] httpHosts = new HttpHost[hosts.size()];
     int i = 0;
@@ -243,6 +270,7 @@ public class ConnectionConfiguration {
             });
     return new RestHighLevelClient(restClientBuilder);
   }
+
 
   private void attachSigV4(final RestClientBuilder restClientBuilder) {
     //if aws signing is enabled we will add AWSRequestSigningApacheInterceptor interceptor,

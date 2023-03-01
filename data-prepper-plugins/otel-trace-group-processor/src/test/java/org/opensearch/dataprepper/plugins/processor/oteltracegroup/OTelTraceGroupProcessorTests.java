@@ -58,7 +58,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
 @ExtendWith(MockitoExtension.class)
 public class OTelTraceGroupProcessorTests {
 
@@ -97,6 +96,7 @@ public class OTelTraceGroupProcessorTests {
     @Mock
     private ConnectionConfiguration connectionConfigurationMock;
 
+    // TODO: Remove RestHighLevelClient and use OpenSearchClient based off changes in OTelTraceGroupProcessor class
     @Mock(lenient = true)
     private RestHighLevelClient restHighLevelClient;
 
